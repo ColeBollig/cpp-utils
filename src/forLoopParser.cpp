@@ -4,26 +4,39 @@
 #include <iostream>
 
 template <typename T> using ParseNextDataFn = bool(*)(std::ifstream& /*stream*/, T& /*data*/, std::string& /*error*/);
-template <typename T> class FileParseItr {
+
+template <typename D, template<typename>typename T> class FileParseItr {
 public:
 	FileParseItr() = delete;
-	FileParseItr(const char*  s, ParseNextDataFn<T> func, bool bin=false) { pfn = func; std::filesystem::path p(s ? s : ""); init(p, bin); }
-	FileParseItr(std::string& s, ParseNextDataFn<T> func, bool bin=false) { pfn = func; std::filesystem::path p(s); init(p, bin); }
-	FileParseItr(std::filesystem::path p, ParseNextDataFn<T> func, bool bin=false) { pfn = func; init(p, bin); }
+
+	FileParseItr(const char*  s, T<D> p, bool bin=false) : parser(p) { std::filesystem::path f(s ? s : ""); init(f, bin); }
+	FileParseItr(std::string& s, T<D> p, bool bin=false) : parser(p) { std::filesystem::path f(s); init(f, bin); }
+	FileParseItr(std::filesystem::path f, T<D> p, bool bin=false) : parser(p) { init(f, bin); }
+
+	FileParseItr(const char*  s, bool bin=false) { std::filesystem::path f(s ? s : ""); init(f, bin); }
+	FileParseItr(std::string& s, bool bin=false) { std::filesystem::path f(s); init(f, bin); }
+	FileParseItr(std::filesystem::path f, bool bin=false) { init(f, bin); }
+
+	// Rule of 5: No Copy or Move constructors
+	FileParseItr(const FileParseItr&) = delete;
+	FileParseItr(FileParseItr&&) = delete;
+	FileParseItr& operator=(const FileParseItr&) = delete;
+	FileParseItr& operator=(FileParseItr&&) = delete;
+
 	~FileParseItr() { if(fs.is_open()) fs.close(); }
 
 	class iterator {
 	public:
-		using value_type = T;
+		using value_type = D;
 		using difference_type = std::ptrdiff_t; //Note difference is note pointer diff
-		using pointer = T*;
-		using reference = T&;
+		using pointer = D*;
+		using reference = D&;
 		using iterator_category = std::input_iterator_tag;
 
 		iterator(FileParseItr& p) : fpi(p) {}
 
 		void next() {
-			if ( ! fpi.pfn(fpi.fs, fpi.data, fpi.err)) {
+			if ( ! fpi.parser(fpi.fs, fpi.data, fpi.err)) {
 				eof = fpi.fs.eof();
 				if ( ! eof) { fpi.parse_failure = true; }
 				if (fpi.copf) {
@@ -39,11 +52,11 @@ public:
 		}
 
 
-		T& operator*() {
+		D& operator*() {
 			return fpi.data;
 		}
 
-		const T& operator*() const {
+		const D& operator*() const {
 			return fpi.data;
 		}
 
@@ -119,15 +132,14 @@ public:
 	std::string error() const { return err; }
 	const char* c_error() const { return err.c_str(); }
 
-	FileParseItr& ContOnParseFailure() { copf = true; return *this; }
-	FileParseItr& FailOnParseFailure() { copf = false; return *this; }
+	FileParseItr& ContOnParseFailure(bool copf=false) { this->copf = copf; return *this; }
 
 protected:
 	std::filesystem::path path;
 	std::ifstream fs;
 
-	ParseNextDataFn<T> pfn = nullptr;
-	T data;
+	T<D> parser;
+	D data;
 
 	std::string err;
 
@@ -149,10 +161,8 @@ private:
 		} else if ( ! std::filesystem::is_regular_file(path)) {
 			err = "Provided file path is not a file";
 			setup_failure = true;
-		} else if (pfn == nullptr) {
-			err = "No parse function pointer provided";
-			setup_failure = true;
 		}
+
 		if (setup_failure) { return; }
 
 		binary = binary_mode;
@@ -200,7 +210,7 @@ bool cust_parse(std::ifstream &stream, T &data, std::string& error) {
 	return true;
 }
 
-void test_iter(FileParseItr<Data>& test) {
+void test_iter(FileParseItr<Data, ParseNextDataFn>& test) {
 	printf("###############Testing#################\n");
 	int i = 0;
 	for (auto& data : test) {
@@ -230,25 +240,31 @@ void test_iter(FileParseItr<Data>& test) {
 	}
 }
 
+template<typename T>
+struct foo {
+	bool operator()(std::ifstream& stream, T& data, std::string& /*error*/) {
+		printf("%d -> ", count++);
+		if ( ! std::getline(stream, data)) { return false; }
+		return true;
+	}
+	int count{0};
+};
+
 int main() {
 	//std::string filename("foo");
-	std::string filename("py_dag_opts.py");
+	std::string filename("forLoopParser.cpp");
 	std::filesystem::path filePath(filename);
 
-	FileParseItr<Data> test_no_func(filePath, nullptr);
-	test_iter(test_no_func);
-
-	FileParseItr<Data> test_empty_str(nullptr, cust_parse);
-	test_iter(test_empty_str);
-
-	FileParseItr<Data> test_std_path(filePath, cust_parse);
+	FileParseItr<Data, ParseNextDataFn> test_std_path(filePath, cust_parse);
 	test_iter(test_std_path);
 
-	FileParseItr<Data> test_std_str(filename, cust_parse);
+	FileParseItr<Data, ParseNextDataFn> test_std_str(filename, cust_parse);
 	test_iter(test_std_str);
 
-	FileParseItr<Data> test_c_str(filename.c_str(), cust_parse);
-	test_iter(test_c_str);
+	FileParseItr<std::string, foo> test_c_str(filename.c_str());
+	for (const auto& data : test_c_str) {
+		printf("%s\n", data.c_str());
+	}
 
 	return 0;
 }
